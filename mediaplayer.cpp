@@ -57,13 +57,31 @@ void MediaPlayer::setupDecoder()
 
 void MediaPlayer::setupAudioOutput()
 {
-    if(m_audioOutput) {
+    if (m_audioOutput) {
         delete m_audioOutput;
     }
-    m_audioOutput = new QAudioSink(m_format, this);
+
+    // Select the analog stereo device explicitly
+    QAudioDevice analogDevice;
+    const auto devices = QMediaDevices::audioOutputs();
+    for (const QAudioDevice &device : devices) {
+        if (device.description().contains("Analog Stereo")) {
+            qDebug() << "Selecting Device: " << device.description();
+            analogDevice = device;
+            break;
+        }
+    }
+
+    if (analogDevice.isNull()) {
+        qWarning() << "Analog stereo device not found";
+        return;
+    }
+
+    m_audioOutput = new QAudioSink(analogDevice, m_format, this);
     m_audioOutput->setVolume(m_volume);
     emit volumeChanged(volume());
 }
+
 
 void MediaPlayer::clearDecoder()
 {
@@ -126,20 +144,24 @@ qint64 MediaPlayer::writeData(const char* data, qint64 len)
 // Start playing audio file
 void MediaPlayer::play()
 {
-    if(m_state == PlaybackState::PlayingState) return;
+    if (m_state == PlaybackState::PlayingState) return;
 
-    if(!m_audioOutput)
+    if (!m_audioOutput) {
+        qDebug() << "Audio output not initialized";
         return;
+    }
 
-    if(m_state == PlaybackState::PausedState) {
+    if (m_state == PlaybackState::PausedState) {
         m_audioOutput->resume();
     } else {
         m_audioOutput->start(this);
     }
 
     m_state = PlaybackState::PlayingState;
+    qDebug() << "Playback started";
     emit playbackStateChanged(m_state);
 }
+
 
 void MediaPlayer::pause()
 {
@@ -228,6 +250,8 @@ void MediaPlayer::bufferReady() // SLOT
 
     m_input.write(data, length);
 
+    //qDebug() << "Buffer ready, length:" << length;
+
     if(m_status != BufferingMedia) {
         setMediaStatus(BufferingMedia);
     }
@@ -239,6 +263,7 @@ void MediaPlayer::bufferReady() // SLOT
 void MediaPlayer::finished() // SLOT
 {
     isDecodingFinished = true;
+    qDebug() << "Decoding finished";
     emit bufferProgressChanged(bufferProgress());
     if(m_status != BufferedMedia) {
         setMediaStatus(BufferedMedia);
@@ -377,25 +402,40 @@ QAudioFormat MediaPlayer::format()
 void MediaPlayer::setSource(const QUrl &source)
 {
     setMediaStatus(MediaPlayer::LoadingMedia);
-    if(m_state != PlaybackState::StoppedState) {
+    if (m_state != PlaybackState::StoppedState) {
         stop();
     }
     clear();
-    QAudioDevice info(QMediaDevices::defaultAudioOutput());
+
+    QAudioDevice info = QMediaDevices::defaultAudioOutput();
     QAudioFormat format = info.preferredFormat();
-    if(!format.isValid()) {
+    if (!format.isValid()) {
         qDebug() << "WARNING: Audio format in default audio output is not defined, using defaults";
         format.setSampleFormat(QAudioFormat::Int16);
-        format.setSampleRate(DEFAULT_SAMPLE_RATE);
-        format.setChannelConfig(QAudioFormat::ChannelConfigStereo);
+        format.setSampleRate(44100);
         format.setChannelCount(2);
     }
-    init(format);
+
+    // Check if the format is supported
+    if (!info.isFormatSupported(format)) {
+        qDebug() << "Default format not supported, using a default format";
+        format.setSampleFormat(QAudioFormat::Int16);
+        format.setSampleRate(44100);
+        format.setChannelCount(2);
+    }
+
+    if (!init(format)) {
+        qDebug() << "Failed to initialize media player with format";
+        return;
+    }
+
     m_source = source;
     m_decoder->setSource(m_source);
     m_decoder->start();
     loadMetaData();
 }
+
+
 
 void MediaPlayer::clearSource()
 {
@@ -433,4 +473,5 @@ void MediaPlayer::setVolume(float volume)
 {
     m_volume = volume;
     if(m_audioOutput) m_audioOutput->setVolume(m_volume);
+    qDebug() << "Volume set to" << m_volume;
 }
